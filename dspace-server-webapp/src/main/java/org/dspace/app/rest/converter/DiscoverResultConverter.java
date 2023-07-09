@@ -7,6 +7,7 @@
  */
 package org.dspace.app.rest.converter;
 
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
 
@@ -20,6 +21,8 @@ import org.dspace.app.rest.model.SearchResultEntryRest;
 import org.dspace.app.rest.model.SearchResultsRest;
 import org.dspace.app.rest.parameter.SearchFilter;
 import org.dspace.app.rest.projection.Projection;
+import org.dspace.authorize.service.AuthorizeService;
+import org.dspace.content.DSpaceObject;
 import org.dspace.core.Context;
 import org.dspace.discovery.DiscoverResult;
 import org.dspace.discovery.IndexableObject;
@@ -44,6 +47,9 @@ public class DiscoverResultConverter {
     protected ConverterService converter;
 
     @Autowired
+    protected AuthorizeService authorizeService;
+
+    @Autowired
     private DiscoverFacetsConverter facetConverter;
     @Autowired
     private SearchFilterToAppliedFilterConverter searchFilterToAppliedFilterConverter;
@@ -55,16 +61,19 @@ public class DiscoverResultConverter {
                                      final Projection projection) {
 
         SearchResultsRest resultsRest = new SearchResultsRest();
-        resultsRest.setProjection(projection);
+        try {
+            resultsRest.setProjection(projection);
 
-        setRequestInformation(context, query, dsoTypes, configurationName, scope, searchFilters, page, resultsRest);
+            setRequestInformation(context, query, dsoTypes, configurationName, scope, searchFilters, page, resultsRest);
 
-        addSearchResults(searchResult, resultsRest, projection);
+            addSearchResults(context, searchResult, resultsRest, projection);
 
-        addFacetValues(context, searchResult, resultsRest, configuration, projection);
+            addFacetValues(context, searchResult, resultsRest, configuration, projection);
 
-        resultsRest.setTotalNumberOfResults(searchResult.getTotalSearchResults());
-
+            resultsRest.setTotalNumberOfResults(searchResult.getTotalSearchResults());
+        } catch (SQLException e) {
+            throw new RuntimeException(e.getMessage(), e);
+        }
         return resultsRest;
     }
 
@@ -73,26 +82,30 @@ public class DiscoverResultConverter {
         facetConverter.addFacetValues(context, searchResult, resultsRest, configuration, projection);
     }
 
-    private void addSearchResults(final DiscoverResult searchResult, final SearchResultsRest resultsRest,
-                                  final Projection projection) {
+    private void addSearchResults(Context context, final DiscoverResult searchResult, final SearchResultsRest resultsRest,
+                                  final Projection projection) throws SQLException {
         for (IndexableObject dspaceObject : CollectionUtils.emptyIfNull(searchResult.getIndexableObjects())) {
-            SearchResultEntryRest resultEntry = new SearchResultEntryRest();
-            resultEntry.setProjection(projection);
+            //Only add objects for which the user is authorized
+            if (authorizeService.isAdmin(context, context.getCurrentUser(),
+                                         (DSpaceObject) dspaceObject.getIndexedObject())) {
+                SearchResultEntryRest resultEntry = new SearchResultEntryRest();
+                resultEntry.setProjection(projection);
 
-            //Convert the DSpace Object to its REST model
-            resultEntry.setIndexableObject(convertDSpaceObject(dspaceObject, projection));
+                //Convert the DSpace Object to its REST model
+                resultEntry.setIndexableObject(convertDSpaceObject(dspaceObject, projection));
 
-            //Add hit highlighting for this DSO if present
-            DiscoverResult.IndexableObjectHighlightResult highlightedResults = searchResult
-                .getHighlightedResults(dspaceObject);
-            if (highlightedResults != null && MapUtils.isNotEmpty(highlightedResults.getHighlightResults())) {
-                for (Map.Entry<String, List<String>> metadataHighlight : highlightedResults.getHighlightResults()
-                                                                                           .entrySet()) {
-                    resultEntry.addHitHighlights(metadataHighlight.getKey(), metadataHighlight.getValue());
+                //Add hit highlighting for this DSO if present
+                DiscoverResult.IndexableObjectHighlightResult highlightedResults = searchResult
+                    .getHighlightedResults(dspaceObject);
+                if (highlightedResults != null && MapUtils.isNotEmpty(highlightedResults.getHighlightResults())) {
+                    for (Map.Entry<String, List<String>> metadataHighlight : highlightedResults.getHighlightResults()
+                                                                                               .entrySet()) {
+                        resultEntry.addHitHighlights(metadataHighlight.getKey(), metadataHighlight.getValue());
+                    }
                 }
-            }
 
-            resultsRest.addSearchResult(resultEntry);
+                resultsRest.addSearchResult(resultEntry);
+            }
         }
     }
 
